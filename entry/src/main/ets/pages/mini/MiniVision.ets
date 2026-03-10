@@ -55,16 +55,22 @@ interface PixelMapSize {
   height: number;
 }
 
-interface CropMetadata {
+export interface MiniImageMetadata {
   cropRegion: string;
   cropResult: string;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  cropOffsetX?: number;
+  cropOffsetY?: number;
+  cropWidth?: number;
+  cropHeight?: number;
 }
 
 export interface MiniImageAttachment {
   name: string;
   mimeType: string;
   pixelMap: image.PixelMap;
-  metadata?: Object;
+  metadata?: MiniImageMetadata;
 }
 
 export async function captureFullScreenshot(
@@ -78,9 +84,16 @@ export async function captureFullScreenshot(
   }
 
   hilog.info(LOG_DOMAIN, LOG_TAG, 'step2 full screenshot complete');
-  const metadata: CropMetadata = {
+  const size = await getPixelMapSize(snapshot as Object as PixelMapLike);
+  const metadata: MiniImageMetadata = {
     cropRegion: 'full_screen',
-    cropResult: 'success'
+    cropResult: 'success',
+    sourceWidth: size?.width,
+    sourceHeight: size?.height,
+    cropOffsetX: 0,
+    cropOffsetY: 0,
+    cropWidth: size?.width,
+    cropHeight: size?.height
   };
   const attachment: MiniImageAttachment = {
     name: `full_${Date.now()}.png`,
@@ -94,6 +107,21 @@ export async function captureFullScreenshot(
 export async function captureBottomThirdScreenshot(
   context: common.UIAbilityContext
 ): Promise<MiniImageAttachment> {
+  return captureBottomPortionScreenshot(context, 2 / 3, 'bottom_third', 'ticket');
+}
+
+export async function captureBottomHalfScreenshot(
+  context: common.UIAbilityContext
+): Promise<MiniImageAttachment> {
+  return captureBottomPortionScreenshot(context, 1 / 2, 'bottom_half', 'ticket');
+}
+
+async function captureBottomPortionScreenshot(
+  context: common.UIAbilityContext,
+  startRatio: number,
+  cropRegion: string,
+  filePrefix: string
+): Promise<MiniImageAttachment> {
   hilog.info(LOG_DOMAIN, LOG_TAG, 'step2 start screenshot and crop bottom one-third');
   const hostWindow = await window.getLastWindow(context) as Object as SnapshotWindowLike;
   const snapshot = await takeWindowSnapshot(hostWindow);
@@ -101,19 +129,15 @@ export async function captureBottomThirdScreenshot(
     throw new Error('snapshot failed');
   }
 
-  const cropResult = await cropBottomThird(snapshot as Object as PixelMapLike);
+  const metadata = await cropBottomPortion(snapshot as Object as PixelMapLike, startRatio, cropRegion);
   hilog.info(
     LOG_DOMAIN,
     LOG_TAG,
     'step2 screenshot complete, cropped=%{public}s',
-    cropResult ? '1' : '0'
+    metadata.cropResult === 'success' ? '1' : '0'
   );
-  const metadata: CropMetadata = {
-    cropRegion: 'bottom_third',
-    cropResult: cropResult ? 'success' : 'failed'
-  };
   const attachment: MiniImageAttachment = {
-    name: `ticket_${Date.now()}.png`,
+    name: `${filePrefix}_${Date.now()}.png`,
     mimeType: 'image/png',
     pixelMap: snapshot as image.PixelMap,
     metadata
@@ -128,25 +152,9 @@ export async function saveScreenshotToGallery(
 ): Promise<string> {
   const helper = photoAccessHelper.getPhotoAccessHelper(context);
   const fileStamp = Date.now();
-  const backupDir = `${context.filesDir}/screenshots`;
-  const backupPath = `${backupDir}/screenshot_${fileStamp}.png`;
+  const backupPath = await saveScreenshotToAppFiles(context, pixelMap, `screenshot_${fileStamp}`);
   const backupUri = fileUri.getUriFromPath(backupPath);
   hilog.info(LOG_DOMAIN, LOG_TAG, 'step2 gallery source file path: %{public}s', backupPath);
-
-  let file: fileIo.File | undefined = undefined;
-  const packer = image.createImagePacker();
-  try {
-    const packedData = await packer.packToData(pixelMap, { format: 'image/png', quality: 100 });
-    const openMode = fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC;
-    await ensureDirExists(backupDir);
-    file = await fileIo.open(backupPath, openMode);
-    await fileIo.write(file.fd, packedData);
-  } finally {
-    if (file) {
-      await fileIo.close(file);
-    }
-    await packer.release();
-  }
 
   // 创建相册资源配置
   const creationConfig: photoAccessHelper.PhotoCreationConfig = {
@@ -170,6 +178,17 @@ export async function saveScreenshotToGallery(
   }
 }
 
+export async function saveScreenshotToAppFiles(
+  context: common.UIAbilityContext,
+  pixelMap: image.PixelMap,
+  filePrefix: string = 'screenshot'
+): Promise<string> {
+  const backupDir = `${context.filesDir}/screenshots`;
+  const backupPath = `${backupDir}/${filePrefix}.png`;
+  await writePixelMapToFile(backupDir, backupPath, pixelMap);
+  return backupPath;
+}
+
 async function ensureDirExists(path: string): Promise<void> {
   try {
     await fileIo.mkdir(path);
@@ -187,13 +206,20 @@ async function takeWindowSnapshot(hostWindow: SnapshotWindowLike): Promise<Objec
   return undefined;
 }
 
-async function cropBottomThird(pixelMap: PixelMapLike): Promise<boolean> {
+async function cropBottomPortion(
+  pixelMap: PixelMapLike,
+  startRatio: number,
+  cropRegion: string
+): Promise<MiniImageMetadata> {
   const size = await getPixelMapSize(pixelMap);
   if (!size) {
-    return false;
+    return {
+      cropRegion,
+      cropResult: 'failed'
+    };
   }
 
-  const cropY = Math.floor(size.height * 2 / 3);
+  const cropY = Math.floor(size.height * startRatio);
   const cropHeight = Math.max(1, size.height - cropY);
   hilog.info(
     LOG_DOMAIN,
@@ -220,13 +246,21 @@ async function cropBottomThird(pixelMap: PixelMapLike): Promise<boolean> {
     height: cropHeight
   };
 
-  if (tryCropSync(pixelMap, regionWithSize) || tryCropSync(pixelMap, regionFlat)) {
-    return true;
-  }
-  if (await tryCropAsync(pixelMap, regionWithSize) || await tryCropAsync(pixelMap, regionFlat)) {
-    return true;
-  }
-  return false;
+  const cropped = tryCropSync(pixelMap, regionWithSize) ||
+    tryCropSync(pixelMap, regionFlat) ||
+    await tryCropAsync(pixelMap, regionWithSize) ||
+    await tryCropAsync(pixelMap, regionFlat);
+
+  return {
+    cropRegion,
+    cropResult: cropped ? 'success' : 'failed',
+    sourceWidth: size.width,
+    sourceHeight: size.height,
+    cropOffsetX: 0,
+    cropOffsetY: cropY,
+    cropWidth: size.width,
+    cropHeight
+  };
 }
 
 function tryCropSync(pixelMap: PixelMapLike, region: Object): boolean {
@@ -279,4 +313,25 @@ function parseImageInfo(info: ImageInfoLike): PixelMapSize | undefined {
     return parsedFromPlain;
   }
   return undefined;
+}
+
+async function writePixelMapToFile(
+  dirPath: string,
+  filePath: string,
+  pixelMap: image.PixelMap
+): Promise<void> {
+  let file: fileIo.File | undefined = undefined;
+  const packer = image.createImagePacker();
+  try {
+    const packedData = await packer.packToData(pixelMap, { format: 'image/png', quality: 100 });
+    const openMode = fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC;
+    await ensureDirExists(dirPath);
+    file = await fileIo.open(filePath, openMode);
+    await fileIo.write(file.fd, packedData);
+  } finally {
+    if (file) {
+      await fileIo.close(file);
+    }
+    await packer.release();
+  }
 }

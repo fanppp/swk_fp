@@ -24,6 +24,13 @@ export interface EnhancedTaskResult {
   extraInfo?: string;
 }
 
+export interface IdentifyTaskOptions {
+  includeUiTree?: boolean;
+  imageMimeType?: 'image/png' | 'image/jpeg';
+  imageQuality?: number;
+  imageDetail?: 'low' | 'high' | 'auto';
+}
+
 /**
  * 增强的任务识别功能
  * 使用大模型来识别任务类型、标题和时间信息
@@ -31,31 +38,40 @@ export interface EnhancedTaskResult {
 export async function identifyTaskFromUserInput(
   context: common.UIAbilityContext,
   userText: string,
-  screenshotPixelMap?: image.PixelMap
+  screenshotPixelMap?: image.PixelMap,
+  options: IdentifyTaskOptions = {}
 ): Promise<EnhancedTaskResult> {
   hilog.info(LOG_DOMAIN, LOG_TAG, 'Starting enhanced task identification');
 
   try {
     const llmService = LlmService.getInstance();
-    const uiTreeService = UiTreeService.getInstance();
+    const includeUiTree = options.includeUiTree === true;
 
     // 准备请求数据
     const request: LlmMultimodalRequest = {
-      userText: userText
+      userText: userText,
+      imageMimeType: options.imageMimeType || 'image/jpeg',
+      imageDetail: options.imageDetail || 'low'
     };
 
     // 获取UI组件树
-    try {
-      request.uiComponentTree = await uiTreeService.getSimplifiedUiInfo(context);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'UI tree captured successfully');
-    } catch (error) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'Failed to capture UI tree: %{public}s', JSON.stringify(error));
+    if (includeUiTree) {
+      const uiTreeService = UiTreeService.getInstance();
+      try {
+        request.uiComponentTree = await uiTreeService.getSimplifiedUiInfo(context);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'UI tree captured successfully');
+      } catch (error) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'Failed to capture UI tree: %{public}s', JSON.stringify(error));
+      }
     }
 
     // 处理截图
     if (screenshotPixelMap) {
       try {
-        request.imageBase64 = await pixelMapToBase64(screenshotPixelMap);
+        request.imageBase64 = await pixelMapToBase64(screenshotPixelMap, {
+          format: options.imageMimeType || 'image/jpeg',
+          quality: options.imageQuality ?? 40
+        });
         hilog.info(LOG_DOMAIN, LOG_TAG, 'Screenshot processed successfully');
       } catch (error) {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'Failed to process screenshot: %{public}s', JSON.stringify(error));

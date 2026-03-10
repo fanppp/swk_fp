@@ -10,6 +10,20 @@ export interface MobileGuiActionLog {
   params: string;
 }
 
+export interface ClickMarker {
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  label: string;
+  createdAt: number;
+}
+
+interface ClickPoint {
+  x: number;
+  y: number;
+}
+
 interface UiTouchSnapshot {
   type?: number | string;
   action?: number | string;
@@ -41,6 +55,7 @@ export class MobileGuiStubService {
   private logs: MobileGuiActionLog[] = [];
   private inputTargetX: number = 660;
   private inputTargetY: number = 1580;
+  private clickMarker?: ClickMarker = undefined;
 
   static getInstance(): MobileGuiStubService {
     if (!MobileGuiStubService.instance) {
@@ -62,7 +77,16 @@ export class MobileGuiStubService {
 
   async imitateClick(event: ClickEvent): Promise<void> {
     const params = this.stringifyClickEvent(event);
-    this.appendLog('imitateClick', params);
+    const point = this.extractClickPoint(event);
+    this.clickMarker = {
+      centerX: point.x,
+      centerY: point.y,
+      width: 180,
+      height: 72,
+      label: '点击目标区域',
+      createdAt: Date.now()
+    };
+    this.appendLog('imitateClick.markOnly', params);
     await this.sleep(120);
   }
 
@@ -121,8 +145,13 @@ export class MobileGuiStubService {
     return [...this.logs].reverse();
   }
 
+  getClickMarker(): ClickMarker | undefined {
+    return this.clickMarker;
+  }
+
   clearLogs(): void {
     this.logs = [];
+    this.clickMarker = undefined;
   }
 
   addExternalLog(action: string, params: string): void {
@@ -170,6 +199,14 @@ export class MobileGuiStubService {
     }
 
     return parts.length > 0 ? parts.join(', ') : '[ClickEvent captured]';
+  }
+
+  private extractClickPoint(event: ClickEvent): ClickPoint {
+    const candidate = event as UiClickSnapshot;
+    const x = candidate.screenX ?? candidate.displayX ?? candidate.windowX ?? candidate.x ?? 0;
+    const y = candidate.screenY ?? candidate.displayY ?? candidate.windowY ?? candidate.y ?? 0;
+    const point: ClickPoint = { x, y };
+    return point;
   }
 
   private async sleep(milliseconds: number): Promise<void> {

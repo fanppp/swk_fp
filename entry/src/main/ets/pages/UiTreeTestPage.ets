@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { UiTreeService, ClickableElement } from './mini/MiniUiTreeService';
-import { captureFullScreenshot, saveScreenshotToGallery } from './mini/MiniVision';
+import { captureFullScreenshot, saveScreenshotToAppFiles } from './mini/MiniVision';
 
 @Entry
 @Component
@@ -222,9 +222,8 @@ struct UiTreeTestPage {
       const screenshotAttachment = await captureFullScreenshot(context);
       this.appendLog(`截图完成: ${screenshotAttachment.name}`);
 
-      // 保存到图库
-      const galleryUri = await saveScreenshotToGallery(context, screenshotAttachment.pixelMap);
-      this.appendLog(`✅ 截图已保存到图库: ${galleryUri}`);
+      const filePath = await saveScreenshotToAppFiles(context, screenshotAttachment.pixelMap, `uitree_test_${Date.now()}`);
+      this.appendLog(`✅ 截图已保存到应用目录: ${filePath}`);
 
       this.showToast('截图保存成功');
     } catch (error) {

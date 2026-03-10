@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { MobileGuiActionLog, MobileGuiStubService } from './mini/MobileGuiStubService';
+import { ClickMarker, MobileGuiActionLog, MobileGuiStubService } from './mini/MobileGuiStubService';
 import { MiniTaskRequest } from './mini/MiniTaskTypes';
 import { MiniTaskRequestStore } from './mini/MiniTaskRequestStore';
 import { MobileTicketTaskExecutor, TicketLocateStrategy } from './mini/MobileTicketTaskExecutor';
@@ -21,9 +21,10 @@ struct MobileGuiTestPage {
   @State longPressHint: string = '请在下方区域真实长按';
   @State scrollHint: string = '请在下方滚动区域真实滑动';
   @State logs: MobileGuiActionLog[] = [];
+  @State clickMarker?: ClickMarker = undefined;
   @State latestRequestText: string = '暂无请求任务';
   @State isExecutingTask: boolean = false;
-  @State locateStrategy: TicketLocateStrategy = 'uiTreeFirst';
+  @State locateStrategy: TicketLocateStrategy = 'screenshotOnly';
 
   private readonly stubService: MobileGuiStubService = MobileGuiStubService.getInstance();
   private readonly taskStore: MiniTaskRequestStore = MiniTaskRequestStore.getInstance();
@@ -38,8 +39,9 @@ struct MobileGuiTestPage {
   }
 
   build() {
-    Scroll() {
-      Column({ space: 16 }) {
+    Stack({ alignContent: Alignment.TopStart }) {
+      Scroll() {
+        Column({ space: 16 }) {
         Text('手机端 GUI 测试')
           .fontSize(24)
           .fontWeight(FontWeight.Bold)
@@ -85,12 +87,16 @@ struct MobileGuiTestPage {
 
             Select([
               { value: 'uiTree优先' },
-              { value: 'LLM优先' }
+              { value: 'LLM优先' },
+              { value: '纯截图' }
             ])
-              .selected(this.locateStrategy === 'uiTreeFirst' ? 0 : 1)
-              .value(this.locateStrategy === 'uiTreeFirst' ? 'uiTree优先' : 'LLM优先')
+              .selected(this.locateStrategy === 'uiTreeFirst' ? 0 : this.locateStrategy === 'llmFirst' ? 1 : 2)
+              .value(
+                this.locateStrategy === 'uiTreeFirst' ? 'uiTree优先' :
+                this.locateStrategy === 'llmFirst' ? 'LLM优先' : '纯截图'
+              )
               .onSelect((index: number) => {
-                this.locateStrategy = index === 0 ? 'uiTreeFirst' : 'llmFirst';
+                this.locateStrategy = index === 0 ? 'uiTreeFirst' : index === 1 ? 'llmFirst' : 'screenshotOnly';
               });
           }
           .width('100%');
@@ -275,13 +281,38 @@ struct MobileGuiTestPage {
           });
         }
         .width('100%');
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 24, bottom: 24 });
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 24, bottom: 24 });
+      .height('100%')
+      .backgroundColor('#FFFFFF');
+
+      if (this.clickMarker) {
+        Column({ space: 6 }) {
+          Text(this.clickMarker?.label || '点击目标区域')
+            .fontSize(14)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF');
+
+          Text(`(${Math.round(this.clickMarker?.centerX || 0)}, ${Math.round(this.clickMarker?.centerY || 0)})`)
+            .fontSize(12)
+            .fontColor('#FFFFFF');
+        }
+        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+        .backgroundColor('#D92D20')
+        .borderRadius(14)
+        .border({ width: 4, color: '#FEE4E2' })
+        .shadow({ radius: 24, color: '#99000000', offsetX: 0, offsetY: 8 })
+        .position({
+          x: Math.max(8, (this.clickMarker?.centerX || 0) - ((this.clickMarker?.width || 180) / 2)),
+          y: Math.max(8, (this.clickMarker?.centerY || 0) - ((this.clickMarker?.height || 72) / 2))
+        })
+      }
     }
     .width('100%')
-    .height('100%')
-    .backgroundColor('#FFFFFF');
+    .height('100%');
   }
 
   private async handleClick(event: ClickEvent): Promise<void> {
@@ -329,6 +360,7 @@ struct MobileGuiTestPage {
 
   private refreshLogs(): void {
     this.logs = this.stubService.getLogs();
+    this.clickMarker = this.stubService.getClickMarker();
   }
 
   private refreshTaskRequest(): void {

@@ -1,7 +1,7 @@
 import router from '@ohos.router';
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { captureFullScreenshot, saveScreenshotToGallery } from './mini/MiniVision';
+import { captureBottomHalfScreenshot } from './mini/MiniVision';
 import { identifyTaskFromUserInput, EnhancedTaskResult } from './mini/MiniLlm';
 import { buildTaskFromParsedInfo, MiniTaskBuildInput } from './mini/MiniTaskBuilder';
 import { MiniTaskCardData, MiniTaskRequest } from './mini/MiniTaskTypes';
@@ -25,10 +25,19 @@ struct ConcertDetailPage {
   @State isProcessing: boolean = false;
   @State resultText: string = '';
   @State logText: string = '';
+  @State currentScrollOffsetY: number = 0;
   private timer?: number = undefined;
+  private pageScroller: Scroller = new Scroller();
 
   aboutToAppear() {
     this.startCountdown();
+    const latestRequest = MiniTaskRequestStore.getInstance().getLatestRequest();
+    if (latestRequest && latestRequest.requestPageUri === 'pages/ConcertDetailPage') {
+      this.currentScrollOffsetY = latestRequest.pageScrollOffsetY || 0;
+      setTimeout(() => {
+        this.pageScroller.scrollTo({ xOffset: 0, yOffset: this.currentScrollOffsetY });
+      }, 200);
+    }
     const bridge = new RegisteredUiAutomationBridge(
       'ConcertDetailPage',
       (): string => this.buildConcertUiTree(),
@@ -45,7 +54,7 @@ struct ConcertDetailPage {
   }
 
   build() {
-    Scroll() {
+    Scroll(this.pageScroller) {
       Column() {
         // 顶部演唱会信息
         Row() {
@@ -85,7 +94,7 @@ struct ConcertDetailPage {
               .fontWeight(FontWeight.Medium)
               .alignSelf(ItemAlign.Start);
 
-            Text('向上滑动可查看识别日志、相册保存结果以及大模型返回的结构化任务信息。')
+            Text('向上滑动可查看识别日志以及大模型返回的结构化任务信息。')
               .fontSize(13)
               .lineHeight(18)
               .fontColor('#666666');
@@ -216,6 +225,9 @@ struct ConcertDetailPage {
       }
       .width('100%');
     }
+    .onDidScroll((_xOffset: number, yOffset: number) => {
+      this.currentScrollOffsetY = Math.max(0, Math.floor(yOffset));
+    })
     .width('100%')
     .height('100%')
     .backgroundColor('#FFFFFF');
@@ -288,26 +300,24 @@ struct ConcertDetailPage {
 
       // 1. 截图
       this.appendLog('📸 正在截取当前页面...');
-      const screenshotAttachment = await captureFullScreenshot(context);
+      const screenshotAttachment = await captureBottomHalfScreenshot(context);
       this.appendLog(`✅ 截图完成: ${screenshotAttachment.name}`);
 
-      // 2. 保存截图到图库
-      try {
-        const galleryUri = await saveScreenshotToGallery(context, screenshotAttachment.pixelMap);
-        this.appendLog(`💾 截图已保存到图库: ${galleryUri}`);
-      } catch (error) {
-        this.appendLog(`⚠️ 保存到图库失败，但继续处理...`);
-      }
-
-      // 3. 使用大模型进行智能识别
+      // 2. 使用大模型进行智能识别
       this.appendLog('🤖 正在使用大模型分析任务...');
-      this.appendLog('📊 分析内容包括: 截图 + UI组件树 + 用户指令');
-      this.appendLog(`🧩 当前UI树摘要已注入，长度: ${this.buildConcertUiTree().length}`);
+      this.appendLog('📊 分析内容包括: 下半屏截图(JPEG压缩) + 用户指令');
+      this.appendLog('🧩 UI组件树默认不发送给大模型');
 
       const taskResult: EnhancedTaskResult = await identifyTaskFromUserInput(
         context,
         this.userInput,
-        screenshotAttachment.pixelMap
+        screenshotAttachment.pixelMap,
+        {
+          includeUiTree: false,
+          imageMimeType: 'image/jpeg',
+          imageQuality: 40,
+          imageDetail: 'low'
+        }
       );
 
       this.appendLog('✨ 大模型分析完成！');
@@ -316,7 +326,7 @@ struct ConcertDetailPage {
       this.appendLog(`⏰ 时间信息: ${taskResult.timeText || '未识别到时间'}`);
       this.appendLog(`🔍 置信度: ${(taskResult.confidence * 100).toFixed(1)}%`);
 
-      // 4. 构建任务对象
+      // 3. 构建任务对象
       const taskInput: MiniTaskBuildInput = {
         taskType: taskResult.taskType,
         title: taskResult.title,
@@ -333,13 +343,14 @@ struct ConcertDetailPage {
         taskTime: taskResult.timeText || '立即执行(打桩)',
         requestPageUri: 'pages/ConcertDetailPage',
         title: taskResult.title,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        pageScrollOffsetY: this.currentScrollOffsetY
       };
       MiniTaskRequestStore.getInstance().saveRequest(request);
       this.appendLog(`🗂️ 已生成任务请求: ${request.requestId}`);
       this.appendLog(`🔗 请求页面URI: ${request.requestPageUri}`);
 
-      // 5. 格式化显示结果
+      // 4. 格式化显示结果
       this.resultText = this.formatTaskResult(taskResult, task, request);
       this.appendLog('🎉 抢票任务识别完成！');
 
@@ -435,15 +446,19 @@ struct ConcertDetailPage {
   }
 
   private buildConcertUiTree(): string {
-    return `Page (id: concert_detail_page) [演唱会详情页]
-  Text (id: concert_title) [***演唱会] bounds(16,20,360,72)
-  Text (id: concert_show_time) [2026.05.23 19:00 周六] bounds(250,420,860,470)
-  Text (id: concert_sale_time) [3月10日 15:00开抢，仅${this.formatCountdown()}] bounds(120,1540,900,1588)
-  TextArea (id: ticket_request_input) [${this.userInput}] bounds(48,1220,1032,1340)
-  Button (id: detect_ticket_task_button) [智能识别抢票任务] bounds(48,1360,1032,1448)
-  Button (id: wish_button) [想看] bounds(48,1620,240,1696)
-  Button (id: rush_ticket_button) [抢票] bounds(820,1620,1000,1696)
-  Link (id: ticket_service_link) [https://hoas.drcn.agconnect.link/Ajjnz] bounds(760,1620,1040,1700)
+    const viewportTop = Math.max(0, Math.floor(this.currentScrollOffsetY));
+    const viewportBottom = viewportTop + 1260;
+    return `Page (id: concert_detail_page) [演唱会详情页] bounds(0,${viewportTop},1080,${viewportBottom}) props(scrollable=true)
+  Scroll (id: concert_detail_scroll) [演唱会详情滚动区] bounds(0,${viewportTop},1080,${viewportBottom}) props(scrollable=true, scrollOffsetY=${viewportTop})
+    Column (id: concert_scroll_content) [演唱会详情内容] bounds(0,0,1080,1900)
+      Text (id: concert_title) [***演唱会] bounds(16,20,360,72)
+      Text (id: concert_show_time) [2026.05.23 19:00 周六] bounds(250,420,860,470)
+      TextArea (id: ticket_request_input) [${this.userInput}] bounds(48,1220,1032,1340)
+      Button (id: detect_ticket_task_button) [智能识别抢票任务] bounds(48,1360,1032,1448)
+      Text (id: concert_sale_time) [3月10日 15:00开抢，仅${this.formatCountdown()}] bounds(120,1540,900,1588)
+      Button (id: wish_button) [想看] bounds(48,1620,240,1696)
+      Button (id: rush_ticket_button) [抢票] bounds(820,1620,1000,1696)
+      Link (id: ticket_service_link) [https://hoas.drcn.agconnect.link/Ajjnz] bounds(760,1620,1040,1700)
 `;
   }
 }

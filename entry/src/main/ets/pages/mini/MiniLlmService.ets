@@ -59,6 +59,15 @@ export interface LlmMultimodalRequest {
   userText: string;
   imageBase64?: string;
   uiComponentTree?: string;
+  imageMimeType?: 'image/png' | 'image/jpeg';
+  imageDetail?: 'low' | 'high' | 'auto';
+}
+
+export interface TicketScreenPlanOptions {
+  includeUiTree?: boolean;
+  retryHint?: string;
+  imageDetail?: 'low' | 'high' | 'auto';
+  imageMimeType?: 'image/png' | 'image/jpeg';
 }
 
 interface LlmApiResponse {
@@ -87,7 +96,16 @@ interface ParsedTaskExecutionStep {
   targetId?: string;
   targetText?: string;
   direction?: 'up' | 'down';
+  x?: number;
+  y?: number;
   reason?: string;
+}
+
+interface ParsedBounds {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
 export interface GuiAction {
@@ -111,6 +129,8 @@ export interface TicketTaskExecutionStep {
   targetId?: string;
   targetText?: string;
   direction?: 'up' | 'down';
+  x?: number;
+  y?: number;
   reason: string;
 }
 
@@ -182,8 +202,8 @@ export class LlmService {
     // 添加图片信息
     if (request.imageBase64) {
       const imageUrl: LlmImageUrl = {
-        url: `data:image/png;base64,${request.imageBase64}`,
-        detail: 'high'
+        url: `data:${request.imageMimeType || 'image/png'};base64,${request.imageBase64}`,
+        detail: request.imageDetail || 'low'
       };
 
       userContent.push({
@@ -323,20 +343,39 @@ export class LlmService {
   async planTicketTaskExecutionFromScreen(
     requestDescription: string,
     requestPageUri: string,
-    uiComponentTree: string,
-    screenshotBase64: string
+    screenshotBase64: string,
+    uiComponentTree?: string,
+    options: TicketScreenPlanOptions = {}
   ): Promise<TicketTaskExecutionStep> {
+    const includeUiTree = options.includeUiTree === true && !!uiComponentTree;
+    const promptLines: string[] = [
+      `请求页面URI: ${requestPageUri}`,
+      `请求描述: ${requestDescription}`,
+      '截图说明: 当前提供的是屏幕下半部分裁剪图，不是整屏截图。',
+      '任务要求: 识别“抢票/立即抢票/马上抢票/去抢票/开抢”这类按钮的当前位置。'
+    ];
+    if (options.retryHint) {
+      promptLines.push(`重试提示: ${options.retryHint}`);
+    }
+    if (includeUiTree) {
+      promptLines.push(`当前UI组件树:\n${uiComponentTree}`);
+    }
+
     const messages: LlmMessage[] = [
       {
         role: 'system',
         content: [{
           type: 'text',
-          text: `你是一个抢票页面屏幕理解助手。
+          text: `你是一个抢票页面屏幕定位助手。
 
-请结合截图和UI树，给出下一步建议：
-- 如果当前屏幕已经看到了抢票相关按钮，返回 click
-- 抢票相关按钮文本可能是：抢票、立即抢票、马上抢票、抢这张票、立即抢这张票
-- 如果当前屏幕没看到按钮，返回 scroll，并说明向上还是向下
+优先依据截图判断，不要臆测按钮位置：
+- 当前图片是屏幕下半部分裁剪图，只关注这张图里真实可见的内容
+- 如果图片里明确看到了抢票相关按钮，返回 click
+- 抢票相关按钮文本可能是：抢票、立即抢票、马上抢票、抢这张票、立即抢这张票、去抢票、开抢
+- 如果图片里没有明确看到目标按钮，返回 scroll，不要伪造 click 坐标
+- 只有在当前图片中清晰看到按钮时，才能返回 x 和 y
+- x/y 必须基于“当前这张裁剪图”的左上角(0,0)，不是整屏坐标
+- 如果提供了 UI 树，它只是辅助信息；当 UI 树和截图冲突时，以截图是否真的可见为准
 
 只输出 JSON：
 {
@@ -344,6 +383,8 @@ export class LlmService {
   "action": "click|scroll",
   "targetText": "可选，按钮文案",
   "direction": "up|down",
+  "x": 0,
+  "y": 0,
   "reason": "原因"
 }`
         }]
@@ -353,13 +394,13 @@ export class LlmService {
         content: [
           {
             type: 'text',
-            text: `请求页面URI: ${requestPageUri}\n请求描述: ${requestDescription}\n当前UI组件树:\n${uiComponentTree}`
+            text: promptLines.join('\n')
           },
           {
             type: 'image_url',
             image_url: {
-              url: `data:image/png;base64,${screenshotBase64}`,
-              detail: 'high'
+              url: `data:${options.imageMimeType || 'image/png'};base64,${screenshotBase64}`,
+              detail: options.imageDetail || 'low'
             }
           }
         ]
@@ -631,6 +672,8 @@ export class LlmService {
           action: 'click',
           targetId: parsed.targetId,
           targetText: parsed.targetText || '抢票',
+          x: parsed.x,
+          y: parsed.y,
           reason: parsed.reason || '已识别到抢票按钮'
         };
       }
@@ -647,7 +690,42 @@ export class LlmService {
     }
   }
 
-  private fallbackTicketExecutionStep(uiComponentTree: string): TicketTaskExecutionStep {
+  private fallbackTicketExecutionStep(uiComponentTree?: string): TicketTaskExecutionStep {
+    if (!uiComponentTree) {
+      return {
+        done: false,
+        action: 'scroll',
+        direction: 'down',
+        reason: '未提供UI树且截图未返回可靠点击坐标，默认向下继续查找'
+      };
+    }
+
+    const rootBounds = this.extractRootBounds(uiComponentTree);
+    const ticketBounds = this.extractTicketBounds(uiComponentTree);
+
+    if (ticketBounds && rootBounds) {
+      if (ticketBounds.top > rootBounds.bottom) {
+        return {
+          done: false,
+          action: 'scroll',
+          direction: 'down',
+          targetId: 'rush_ticket_button',
+          targetText: '抢票',
+          reason: 'UI树中已找到抢票按钮，但它位于当前可视区域下方'
+        };
+      }
+      if (ticketBounds.bottom < rootBounds.top) {
+        return {
+          done: false,
+          action: 'scroll',
+          direction: 'up',
+          targetId: 'rush_ticket_button',
+          targetText: '抢票',
+          reason: 'UI树中已找到抢票按钮，但它位于当前可视区域上方'
+        };
+      }
+    }
+
     if (uiComponentTree.includes('rush_ticket_button') || uiComponentTree.includes('[抢票]')) {
       return {
         done: false,
@@ -663,6 +741,39 @@ export class LlmService {
       action: 'scroll',
       direction: 'down',
       reason: 'UI树中未找到抢票按钮，向下滚动继续查找'
+    };
+  }
+
+  private extractRootBounds(uiComponentTree: string): ParsedBounds | undefined {
+    const match = uiComponentTree.match(/(?:Page|Window|Scroll|ContentArea) .*?bounds\((\d+),(\d+),(\d+),(\d+)\)/);
+    return this.parseBoundsMatch(match);
+  }
+
+  private extractTicketBounds(uiComponentTree: string): ParsedBounds | undefined {
+    const lines = uiComponentTree.split('\n');
+    for (const line of lines) {
+      if (!/抢票|立即抢票|马上抢票|抢这张票|立即抢这张票|去抢票|开抢/.test(line) &&
+        !line.includes('rush_ticket_button')) {
+        continue;
+      }
+      const match = line.match(/bounds\((\d+),(\d+),(\d+),(\d+)\)/);
+      const parsed = this.parseBoundsMatch(match);
+      if (parsed) {
+        return parsed;
+      }
+    }
+    return undefined;
+  }
+
+  private parseBoundsMatch(match: RegExpMatchArray | null): ParsedBounds | undefined {
+    if (!match) {
+      return undefined;
+    }
+    return {
+      left: Number(match[1]),
+      top: Number(match[2]),
+      right: Number(match[3]),
+      bottom: Number(match[4])
     };
   }
 
@@ -781,10 +892,21 @@ export class LlmService {
 /**
  * 将PixelMap转换为Base64字符串
  */
-export async function pixelMapToBase64(pixelMap: image.PixelMap): Promise<string> {
+export interface PixelMapEncodeOptions {
+  format?: 'image/png' | 'image/jpeg';
+  quality?: number;
+}
+
+export async function pixelMapToBase64(
+  pixelMap: image.PixelMap,
+  options: PixelMapEncodeOptions = {}
+): Promise<string> {
   const packer = image.createImagePacker();
   try {
-    const arrayBuffer = await packer.packToData(pixelMap, { format: 'image/png', quality: 90 });
+    const arrayBuffer = await packer.packToData(pixelMap, {
+      format: options.format || 'image/png',
+      quality: options.quality ?? 90
+    });
     const uint8Array = new Uint8Array(arrayBuffer);
 
     // 使用HarmonyOS的Base64工具
