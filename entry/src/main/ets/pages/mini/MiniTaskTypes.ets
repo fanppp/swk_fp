@@ -44,4 +44,5 @@ export interface MiniTaskRequest {
   requestPageUri: string;
   title: string;
   createdAt: number;
+  pageScrollOffsetY?: number;
 }
