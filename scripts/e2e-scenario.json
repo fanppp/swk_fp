@@ -1,0 +1,75 @@
+{
+  "artifactDir": "artifacts/e2e",
+  "steps": [
+    {
+      "type": "screencap",
+      "name": "home_before"
+    },
+    {
+      "type": "tap",
+      "x": 640,
+      "y": 1960,
+      "delayMs": 900
+    },
+    {
+      "type": "screencap",
+      "name": "detail_opened"
+    },
+    {
+      "type": "tap",
+      "x": 620,
+      "y": 1210,
+      "delayMs": 900
+    },
+    {
+      "type": "screencap",
+      "name": "time_panel_opened"
+    },
+    {
+      "type": "tap",
+      "x": 90,
+      "y": 2214,
+      "delayMs": 800
+    },
+    {
+      "type": "tap",
+      "x": 730,
+      "y": 2288,
+      "delayMs": 800
+    },
+    {
+      "type": "screencap",
+      "name": "time_selected"
+    },
+    {
+      "type": "tap",
+      "x": 1130,
+      "y": 1830,
+      "delayMs": 900
+    },
+    {
+      "type": "screencap",
+      "name": "detail_after_done"
+    },
+    {
+      "type": "tap",
+      "x": 1175,
+      "y": 360,
+      "delayMs": 400
+    },
+    {
+      "type": "tap",
+      "x": 1175,
+      "y": 405,
+      "delayMs": 900
+    },
+    {
+      "type": "sleep",
+      "milliseconds": 500
+    },
+    {
+      "type": "screencap",
+      "name": "home_after"
+    }
+  ]
+}

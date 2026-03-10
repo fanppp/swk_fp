@@ -1,0 +1,9 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/GuiTestPage",
+    "pages/MobileGuiTestPage",
+    "pages/ConcertDetailPage",
+    "pages/UiTreeTestPage"
+  ]
+}
