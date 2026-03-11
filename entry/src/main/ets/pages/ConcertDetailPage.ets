@@ -1,464 +1,275 @@
-import router from '@ohos.router';
 import { common } from '@kit.AbilityKit';
+import display from '@ohos.display';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { captureBottomHalfScreenshot } from './mini/MiniVision';
-import { identifyTaskFromUserInput, EnhancedTaskResult } from './mini/MiniLlm';
-import { buildTaskFromParsedInfo, MiniTaskBuildInput } from './mini/MiniTaskBuilder';
-import { MiniTaskCardData, MiniTaskRequest } from './mini/MiniTaskTypes';
-import { RegisteredUiAutomationBridge, UiAutomationRegistry } from './mini/MiniUiAutomationRegistry';
-import { GuiAction } from './mini/MiniLlmService';
-import { MiniTaskRequestStore } from './mini/MiniTaskRequestStore';
-
-interface CountdownTime {
-  days: number;
-  hours: number;
-  minutes: number;
-  seconds: number;
-}
+import { CurrentPageMultimodalPlanner } from './mini/CurrentPageMultimodalPlanner';
+import { GuiActionPlan, GuiAgentService, GuiSemanticDescriptor, GuiViewport } from './mini/GuiAgentService';
+import { ClickMarker, MobileGuiActionLog, MobileGuiStubService } from './mini/MobileGuiStubService';
 
 @Entry
 @Component
 struct ConcertDetailPage {
-  @State countdown: CountdownTime = { days: 0, hours: 6, minutes: 29, seconds: 15 };
-  @State isLiked: boolean = false;
-  @State userInput: string = '等下帮我抢这张演唱会门票';
-  @State isProcessing: boolean = false;
-  @State resultText: string = '';
-  @State logText: string = '';
-  @State currentScrollOffsetY: number = 0;
-  private timer?: number = undefined;
-  private pageScroller: Scroller = new Scroller();
+  @State userInput: string = '帮我抢票';
+  @State logs: MobileGuiActionLog[] = [];
+  @State clickMarker?: ClickMarker = undefined;
+  @State statusText: string = '等待指令';
+  @State perceptionText: string = '尚未采集屏幕语义';
+
+  private readonly stubService: MobileGuiStubService = MobileGuiStubService.getInstance();
+  private readonly guiAgent: GuiAgentService = new GuiAgentService();
+  private readonly multimodalPlanner: CurrentPageMultimodalPlanner = new CurrentPageMultimodalPlanner();
+  private readonly semanticDescriptors: GuiSemanticDescriptor[] = [
+    { id: 'concert_title', label: '演唱会详情', role: 'text', clickable: false, keywords: ['演唱会', '详情'] },
+    { id: 'instruction_input', label: '指令输入框', role: 'input', clickable: true, keywords: ['输入', '指令'] },
+    { id: 'execute_instruction_button', label: '执行指令', role: 'button', clickable: true, keywords: ['执行', '开始'] },
+    { id: 'wish_button', label: '想看', role: 'button', clickable: true, keywords: ['收藏', '想看'] },
+    { id: 'rush_ticket_button', label: '抢票', role: 'button', clickable: true, keywords: ['抢票', '购票', '买票'] }
+  ];
+  private viewport: GuiViewport = { width: 1320, height: 2400 };
+  private static readonly LOG_DOMAIN: number = 0x0523;
+  private static readonly LOG_TAG: string = 'GuiAgentPage';
 
   aboutToAppear() {
-    this.startCountdown();
-    const latestRequest = MiniTaskRequestStore.getInstance().getLatestRequest();
-    if (latestRequest && latestRequest.requestPageUri === 'pages/ConcertDetailPage') {
-      this.currentScrollOffsetY = latestRequest.pageScrollOffsetY || 0;
-      setTimeout(() => {
-        this.pageScroller.scrollTo({ xOffset: 0, yOffset: this.currentScrollOffsetY });
-      }, 200);
-    }
-    const bridge = new RegisteredUiAutomationBridge(
-      'ConcertDetailPage',
-      (): string => this.buildConcertUiTree(),
-      async (_action: GuiAction): Promise<boolean> => false
-    );
-    UiAutomationRegistry.getInstance().registerBridge(bridge);
-  }
-
-  aboutToDisappear() {
-    if (this.timer) {
-      clearInterval(this.timer);
-    }
-    UiAutomationRegistry.getInstance().unregisterBridge('ConcertDetailPage');
+    this.updateViewport();
+    this.stubService.clearLogs();
+    this.refreshStubState();
   }
 
   build() {
-    Scroll(this.pageScroller) {
-      Column() {
-        // 顶部演唱会信息
-        Row() {
-          Text('***演唱会')
-            .fontSize(24)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#1E1E1E')
-            .margin({ left: 16, top: 20 });
-        }
-        .width('100%')
-        .justifyContent(FlexAlign.Start);
-
-        Blank()
-          .height(220);
-
-        // 中间时间信息
-        Column({ space: 8 }) {
-          Text('2026.05.23 19:00 周六')
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#333333');
-
-          Text('演出时间')
-            .fontSize(14)
-            .fontColor('#666666');
-        }
-        .margin({ top: 40, bottom: 40 });
-
-        Blank()
-          .height(260);
-
-        // 底部操作区域
-        Column({ space: 16 }) {
-          Column({ space: 8 }) {
-            Text('页面说明')
-              .fontSize(16)
-              .fontWeight(FontWeight.Medium)
+    Stack({ alignContent: Alignment.TopStart }) {
+      Scroll() {
+        Column({ space: 20 }) {
+          Column({ space: 10 }) {
+            Text('演唱会详情页')
+              .id('concert_title')
+              .fontSize(28)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#111827')
               .alignSelf(ItemAlign.Start);
 
-            Text('向上滑动可查看识别日志以及大模型返回的结构化任务信息。')
-              .fontSize(13)
-              .lineHeight(18)
-              .fontColor('#666666');
+            Text('最小 GUI 原型：输入“帮我抢票”，当前页会识别可视区域并决定点击或建议滚动。')
+              .width('100%')
+              .fontSize(14)
+              .lineHeight(22)
+              .fontColor('#4B5563');
           }
           .width('100%')
-          .padding(16)
-          .backgroundColor('#FFF7ED')
-          .borderRadius(12);
+          .alignItems(HorizontalAlign.Start);
 
-          // 抢票识别测试区域
           Column({ space: 12 }) {
-            Text('抢票识别测试')
+            Text('周杰伦 2026 嘉年华世界巡回演唱会')
+              .fontSize(22)
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#0F172A');
+
+            Text('2026.05.23 19:00 周六 | 上海体育场')
+              .fontSize(15)
+              .fontColor('#475569');
+
+            Text('票档：380 / 680 / 980 / 1380')
+              .fontSize(14)
+              .fontColor('#475569');
+          }
+          .width('100%')
+          .padding(20)
+          .backgroundColor('#FFF7ED')
+          .borderRadius(20)
+          .alignItems(HorizontalAlign.Start);
+
+          Column({ space: 12 }) {
+            Text('Agent 指令')
               .fontSize(18)
               .fontWeight(FontWeight.Medium)
-              .fontColor('#333333')
               .alignSelf(ItemAlign.Start);
 
             TextArea({
-              placeholder: '请输入抢票指令，如：等下帮我抢这张演唱会门票',
+              placeholder: '请输入：帮我抢票',
               text: this.userInput
             })
+              .id('instruction_input')
               .width('100%')
-              .height(60)
-              .backgroundColor('#F8F8F8')
-              .borderRadius(8)
-              .padding(8)
+              .height(960)
+              .backgroundColor('#F8FAFC')
+              .borderRadius(16)
+              .padding(12)
               .onChange((value: string) => {
                 this.userInput = value;
               });
 
-            Button(this.isProcessing ? '识别中...' : '智能识别抢票任务')
+            Button('执行指令')
+              .id('execute_instruction_button')
               .width('100%')
-              .height(44)
-              .fontSize(16)
-              .fontWeight(FontWeight.Medium)
-              .backgroundColor('#4CAF50')
-              .borderRadius(8)
-              .enabled(!this.isProcessing && this.userInput.trim().length > 0)
+              .height(48)
+              .backgroundColor('#2563EB')
+              .fontColor('#FFFFFF')
               .onClick(() => {
-                void this.processTicketRequest();
+                void this.handleUserCommand();
               });
           }
           .width('100%')
           .padding(16)
-          .backgroundColor('#F9F9F9')
-          .borderRadius(12);
+          .backgroundColor('#EEF2FF')
+          .borderRadius(20);
 
-          Text(`3月10日 15:00开抢，仅${this.formatCountdown()}`)
-            .fontSize(14)
-            .fontColor('#FF6B35')
-            .fontWeight(FontWeight.Medium);
+          Column({ space: 12 }) {
+            Row({ space: 12 }) {
+              Button('想看')
+                .id('wish_button')
+                .layoutWeight(1)
+                .height(44)
+                .backgroundColor('#E5E7EB')
+                .fontColor('#111827');
 
-          Row({ space: 12 }) {
-            Row({ space: 6 }) {
-              Text('♥')
-                .fontSize(16)
-                .fontColor(this.isLiked ? '#FF6B35' : '#999999');
-
-              Text('想看')
-                .fontSize(14)
-                .fontColor('#666666');
+              Button('抢票')
+                .id('rush_ticket_button')
+                .layoutWeight(1)
+                .height(44)
+                .backgroundColor('#EA580C')
+                .fontColor('#FFFFFF')
+                .fontWeight(FontWeight.Medium);
             }
-            .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-            .borderRadius(20)
-            .border({ width: 1, color: '#E0E0E0' })
-            .onClick(() => {
-              this.isLiked = !this.isLiked;
-            });
-
-            Blank()
-              .layoutWeight(1);
-
-            Button('抢票')
-              .width(100)
-              .height(40)
-              .fontSize(16)
-              .fontWeight(FontWeight.Medium)
-              .backgroundColor('#FF6B35')
-              .borderRadius(20)
-              .onClick(() => {
-                this.goToTicketService();
-              });
+            .width('100%');
           }
           .width('100%')
-          .padding({ left: 16, right: 16 });
+          .padding(16)
+          .backgroundColor('#FFFFFF')
+          .borderRadius(20);
 
-          if (this.resultText || this.logText) {
-            Column({ space: 8 }) {
-              if (this.logText) {
-                Text('处理日志')
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Medium)
-                  .alignSelf(ItemAlign.Start);
+          Column({ space: 8 }) {
+            Text('执行结果')
+              .fontSize(18)
+              .fontWeight(FontWeight.Medium)
+              .alignSelf(ItemAlign.Start);
 
-                Text(this.logText)
-                  .width('100%')
-                  .fontSize(12)
-                  .lineHeight(16)
-                  .fontColor('#666666')
-                  .backgroundColor('#F0F0F0')
-                  .padding(8)
-                  .borderRadius(6);
-              }
+            Text(`状态：${this.statusText}`)
+              .width('100%')
+              .fontSize(14)
+              .fontColor('#1D4ED8');
 
-              if (this.resultText) {
-                Text('识别结果')
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Medium)
-                  .alignSelf(ItemAlign.Start);
-
-                Text(this.resultText)
-                  .width('100%')
-                  .fontSize(12)
-                  .lineHeight(16)
-                  .fontColor('#333333')
-                  .backgroundColor('#E8F5E8')
-                  .padding(12)
-                  .borderRadius(8);
-              }
-            }
-            .width('100%')
-            .padding(16)
-            .alignItems(HorizontalAlign.Start);
+            Text(this.perceptionText)
+              .width('100%')
+              .fontSize(12)
+              .lineHeight(18)
+              .fontColor('#475569')
+              .backgroundColor('#FFFFFF')
+              .padding(10)
+              .borderRadius(12)
+              .maxLines(10);
           }
+          .width('100%')
+          .padding(16)
+          .backgroundColor('#F8FAFC')
+          .borderRadius(20)
+          .alignItems(HorizontalAlign.Start);
+
+          Column({ space: 8 }) {
+            Text('Stub 日志')
+              .fontSize(18)
+              .fontWeight(FontWeight.Medium)
+              .alignSelf(ItemAlign.Start);
+
+            ForEach(this.logs, (item: MobileGuiActionLog) => {
+              Text(`[${item.timestamp}] ${item.action} | ${item.params}`)
+                .width('100%')
+                .fontSize(12)
+                .lineHeight(18)
+                .fontColor('#475569')
+                .padding(10)
+                .backgroundColor('#FFFFFF')
+                .borderRadius(12);
+            }, (item: MobileGuiActionLog) => `${item.timestamp}_${item.action}_${item.params}`);
+          }
+          .width('100%')
+          .padding(16)
+          .backgroundColor('#F8FAFC')
+          .borderRadius(20)
+          .alignItems(HorizontalAlign.Start);
         }
-        .margin({ bottom: 40 })
-        .padding({ left: 16, right: 16 });
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 24, bottom: 36 });
       }
-      .width('100%');
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#F3F4F6');
+
+      if (this.clickMarker) {
+        Column({ space: 4 }) {
+          Text(this.clickMarker?.label || '点击目标')
+            .fontSize(14)
+            .fontWeight(FontWeight.Bold)
+            .fontColor('#FFFFFF');
+
+          Text(`(${Math.round(this.clickMarker?.centerX || 0)}, ${Math.round(this.clickMarker?.centerY || 0)})`)
+            .fontSize(12)
+            .fontColor('#FFFFFF');
+        }
+        .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+        .backgroundColor('#DC2626')
+        .borderRadius(14)
+        .position({
+          x: Math.max(12, (this.clickMarker?.centerX || 0) - ((this.clickMarker?.width || 180) / 2)),
+          y: Math.max(12, (this.clickMarker?.centerY || 0) - ((this.clickMarker?.height || 72) / 2))
+        });
+      }
     }
-    .onDidScroll((_xOffset: number, yOffset: number) => {
-      this.currentScrollOffsetY = Math.max(0, Math.floor(yOffset));
-    })
     .width('100%')
-    .height('100%')
-    .backgroundColor('#FFFFFF');
+    .height('100%');
   }
 
-  /**
-   * 启动倒计时
-   */
-  private startCountdown() {
-    this.timer = setInterval(() => {
-      if (this.countdown.seconds > 0) {
-        this.countdown.seconds--;
-      } else if (this.countdown.minutes > 0) {
-        this.countdown.minutes--;
-        this.countdown.seconds = 59;
-      } else if (this.countdown.hours > 0) {
-        this.countdown.hours--;
-        this.countdown.minutes = 59;
-        this.countdown.seconds = 59;
-      } else if (this.countdown.days > 0) {
-        this.countdown.days--;
-        this.countdown.hours = 23;
-        this.countdown.minutes = 59;
-        this.countdown.seconds = 59;
-      } else {
-        // 倒计时结束
-        if (this.timer) {
-          clearInterval(this.timer);
-        }
-      }
-
-      // 触发UI更新
-      this.countdown = {
-        days: this.countdown.days,
-        hours: this.countdown.hours,
-        minutes: this.countdown.minutes,
-        seconds: this.countdown.seconds
-      };
-    }, 1000);
-  }
-
-  /**
-   * 格式化倒计时显示
-   */
-  private formatCountdown(): string {
-    const pad = (num: number) => num.toString().padStart(2, '0');
-
-    if (this.countdown.days > 0) {
-      return `${this.countdown.days}天${pad(this.countdown.hours)}时${pad(this.countdown.minutes)}分${pad(this.countdown.seconds)}秒`;
-    } else {
-      return `${pad(this.countdown.hours)}时${pad(this.countdown.minutes)}分${pad(this.countdown.seconds)}秒`;
-    }
-  }
-
-  /**
-   * 处理抢票请求
-   */
-  private async processTicketRequest(): Promise<void> {
-    if (this.isProcessing || !this.userInput.trim()) {
+  private async handleUserCommand(): Promise<void> {
+    const normalizedInput = this.userInput.trim();
+    if (!normalizedInput) {
+      this.statusText = '请输入指令';
       return;
     }
 
-    this.isProcessing = true;
-    this.resultText = '';
-    this.logText = '';
-    this.appendLog('🚀 开始处理抢票请求...');
+    const snapshot = this.guiAgent.captureSnapshot(normalizedInput, this.semanticDescriptors, this.viewport);
+    const fallbackPlan: GuiActionPlan = this.guiAgent.planAction(snapshot);
+    const context = getContext(this) as common.UIAbilityContext;
+    const plan: GuiActionPlan = await this.multimodalPlanner.planNextAction(context, snapshot, fallbackPlan);
+    this.perceptionText = plan.snapshotText;
+    hilog.info(ConcertDetailPage.LOG_DOMAIN, ConcertDetailPage.LOG_TAG, 'suggest %{public}s target=%{public}s reason=%{public}s',
+      plan.action, plan.targetLabel || plan.targetId || 'none', plan.reason);
 
+    if (plan.action === 'scroll') {
+      this.statusText = plan.reason;
+      this.refreshStubState();
+      this.showToast(`建议向${plan.direction === 'up' ? '上' : '下'}滚动`);
+      return;
+    }
+
+    if (plan.action !== 'click' || plan.x === undefined || plan.y === undefined) {
+      this.statusText = plan.reason;
+      return;
+    }
+
+    this.statusText = plan.reason;
+    this.stubService.requestFocus(0);
+    await this.stubService.imitateClickAt(plan.x, plan.y, `自动点击:${plan.targetLabel || '未知目标'}`);
+    this.refreshStubState();
+    this.showToast(`已自动点击${plan.targetLabel || '目标按钮'}`);
+  }
+
+  private refreshStubState(): void {
+    this.logs = this.stubService.getLogs();
+    this.clickMarker = this.stubService.getClickMarker();
+  }
+
+  private updateViewport(): void {
     try {
-      const context = getContext(this) as common.UIAbilityContext;
-
-      // 1. 截图
-      this.appendLog('📸 正在截取当前页面...');
-      const screenshotAttachment = await captureBottomHalfScreenshot(context);
-      this.appendLog(`✅ 截图完成: ${screenshotAttachment.name}`);
-
-      // 2. 使用大模型进行智能识别
-      this.appendLog('🤖 正在使用大模型分析任务...');
-      this.appendLog('📊 分析内容包括: 下半屏截图(JPEG压缩) + 用户指令');
-      this.appendLog('🧩 UI组件树默认不发送给大模型');
-
-      const taskResult: EnhancedTaskResult = await identifyTaskFromUserInput(
-        context,
-        this.userInput,
-        screenshotAttachment.pixelMap,
-        {
-          includeUiTree: false,
-          imageMimeType: 'image/jpeg',
-          imageQuality: 40,
-          imageDetail: 'low'
-        }
-      );
-
-      this.appendLog('✨ 大模型分析完成！');
-      this.appendLog(`🎯 任务类型: ${taskResult.taskType}`);
-      this.appendLog(`📋 任务标题: ${taskResult.title}`);
-      this.appendLog(`⏰ 时间信息: ${taskResult.timeText || '未识别到时间'}`);
-      this.appendLog(`🔍 置信度: ${(taskResult.confidence * 100).toFixed(1)}%`);
-
-      // 3. 构建任务对象
-      const taskInput: MiniTaskBuildInput = {
-        taskType: taskResult.taskType,
-        title: taskResult.title,
-        timeText: taskResult.timeText,
-        scheduleType: 'once',
-        extraInfo: taskResult.extraInfo
+      const currentDisplay = display.getDefaultDisplaySync();
+      this.viewport = {
+        width: Number(currentDisplay.width),
+        height: Number(currentDisplay.height)
       };
-
-      const task: MiniTaskCardData = buildTaskFromParsedInfo(this.userInput, taskInput);
-      const request: MiniTaskRequest = {
-        requestId: `REQ_${Date.now()}`,
-        requestType: taskResult.taskType,
-        requestDescription: this.userInput,
-        taskTime: taskResult.timeText || '立即执行(打桩)',
-        requestPageUri: 'pages/ConcertDetailPage',
-        title: taskResult.title,
-        createdAt: Date.now(),
-        pageScrollOffsetY: this.currentScrollOffsetY
-      };
-      MiniTaskRequestStore.getInstance().saveRequest(request);
-      this.appendLog(`🗂️ 已生成任务请求: ${request.requestId}`);
-      this.appendLog(`🔗 请求页面URI: ${request.requestPageUri}`);
-
-      // 4. 格式化显示结果
-      this.resultText = this.formatTaskResult(taskResult, task, request);
-      this.appendLog('🎉 抢票任务识别完成！');
-
-      this.showToast(`识别成功: ${taskResult.title} (${(taskResult.confidence * 100).toFixed(0)}%)`);
-
-    } catch (error) {
-      const err = error as Error;
-      this.appendLog(`❌ 处理失败: ${err.message || JSON.stringify(error)}`);
-      this.showToast('抢票识别失败，请重试');
-    } finally {
-      this.isProcessing = false;
+    } catch (_error) {
+      this.viewport = { width: 1320, height: 2400 };
     }
   }
 
-  /**
-   * 格式化任务结果
-   */
-  private formatTaskResult(result: EnhancedTaskResult, task: MiniTaskCardData, request: MiniTaskRequest): string {
-    const lines: string[] = [];
-    lines.push('🎫 === 抢票任务识别结果 === 🎫');
-    lines.push('');
-    lines.push(`📋 任务类型: ${result.taskType}`);
-    lines.push(`🎭 任务标题: ${result.title}`);
-    lines.push(`⏰ 执行时间: ${result.timeText || '待确定'}`);
-    lines.push(`🎯 识别置信度: ${(result.confidence * 100).toFixed(1)}%`);
-    lines.push('');
-
-    if (result.extraInfo) {
-      lines.push(`ℹ️ 额外信息: ${result.extraInfo}`);
-      lines.push('');
-    }
-
-    lines.push('📊 === 生成的任务详情 === 📊');
-    lines.push(`🆔 任务ID: ${task.id}`);
-    lines.push(`📝 描述: ${task.description}`);
-    lines.push(`📅 创建时间: ${new Date(task.createdAt).toLocaleString()}`);
-    lines.push(`🕐 调度类型: ${task.schedule.scheduleType}`);
-    lines.push('');
-    lines.push('📨 === 任务请求 === 📨');
-    lines.push(`RequestId: ${request.requestId}`);
-    lines.push(`RequestType: ${request.requestType}`);
-    lines.push(`RequestDescription: ${request.requestDescription}`);
-    lines.push(`TaskTime: ${request.taskTime}`);
-    lines.push(`RequestPageUri: ${request.requestPageUri}`);
-
-    return lines.join('\n');
-  }
-
-  /**
-   * 添加日志
-   */
-  private appendLog(message: string): void {
-    const timestamp = new Date().toLocaleTimeString();
-    const logLine = `[${timestamp}] ${message}`;
-    this.logText = this.logText.length === 0 ? logLine : `${this.logText}\n${logLine}`;
-    hilog.info(0x0523, 'ConcertDetail', '%{public}s', message);
-  }
-
-  /**
-   * 跳转到票务元服务
-   */
-  private goToTicketService() {
-    try {
-      const applinkingUrl = 'https://hoas.drcn.agconnect.link/Ajjnz';
-      const context = getContext(this) as common.UIAbilityContext;
-
-      context.openLink(applinkingUrl)
-        .then(() => {
-          console.info('openAtomicService succeed');
-        })
-        .catch((err: Error) => {
-          console.error('openAtomicService failed:', err.message || JSON.stringify(err));
-          this.showToast('暂时无法打开抢票服务，请稍后重试');
-        });
-    } catch (error) {
-      console.error('Error opening ticket service:', JSON.stringify(error));
-      this.showToast('打开抢票服务失败');
-    }
-  }
-
-  /**
-   * 显示Toast提示
-   */
-  private showToast(message: string) {
-    try {
-      this.getUIContext().getPromptAction().showToast({
-        message: message,
-        duration: 3000
-      });
-    } catch (error) {
-      console.error('Failed to show toast:', JSON.stringify(error));
-    }
-  }
-
-  private buildConcertUiTree(): string {
-    const viewportTop = Math.max(0, Math.floor(this.currentScrollOffsetY));
-    const viewportBottom = viewportTop + 1260;
-    return `Page (id: concert_detail_page) [演唱会详情页] bounds(0,${viewportTop},1080,${viewportBottom}) props(scrollable=true)
-  Scroll (id: concert_detail_scroll) [演唱会详情滚动区] bounds(0,${viewportTop},1080,${viewportBottom}) props(scrollable=true, scrollOffsetY=${viewportTop})
-    Column (id: concert_scroll_content) [演唱会详情内容] bounds(0,0,1080,1900)
-      Text (id: concert_title) [***演唱会] bounds(16,20,360,72)
-      Text (id: concert_show_time) [2026.05.23 19:00 周六] bounds(250,420,860,470)
-      TextArea (id: ticket_request_input) [${this.userInput}] bounds(48,1220,1032,1340)
-      Button (id: detect_ticket_task_button) [智能识别抢票任务] bounds(48,1360,1032,1448)
-      Text (id: concert_sale_time) [3月10日 15:00开抢，仅${this.formatCountdown()}] bounds(120,1540,900,1588)
-      Button (id: wish_button) [想看] bounds(48,1620,240,1696)
-      Button (id: rush_ticket_button) [抢票] bounds(820,1620,1000,1696)
-      Link (id: ticket_service_link) [https://hoas.drcn.agconnect.link/Ajjnz] bounds(760,1620,1040,1700)
-`;
+  private showToast(message: string): void {
+    this.getUIContext().getPromptAction().showToast({
+      message,
+      duration: 2000
+    });
   }
 }
