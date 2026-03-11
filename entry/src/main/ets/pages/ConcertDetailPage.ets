@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { loadRawfileImageBase64 } from './mini/MiniVision';
-import { identifyTaskFromImageBase64, EnhancedTaskResult } from './mini/MiniLlm';
+import { loadRawfileImage } from './mini/MiniVision';
+import { identifyTaskFromUserInput, EnhancedTaskResult } from './mini/MiniLlm';
 
 @Entry
 @Component
@@ -82,13 +82,12 @@ struct ConcertDetailPage {
 
     try {
       const context = getContext(this) as common.UIAbilityContext;
-      const sampleAttachment = await loadRawfileImageBase64(context, this.sampleImagePath);
+      const sampleAttachment = await loadRawfileImage(context, this.sampleImagePath);
       this.appendLog(`参考图加载完成: ${sampleAttachment.name}`);
 
-      const taskResult: EnhancedTaskResult = await identifyTaskFromImageBase64(
+      const taskResult: EnhancedTaskResult = await identifyTaskFromUserInput(
         this.promptText,
-        sampleAttachment.base64,
-        sampleAttachment.mimeType
+        sampleAttachment.pixelMap
       );
 
       this.resultText = [

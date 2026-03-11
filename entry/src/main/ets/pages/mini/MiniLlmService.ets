@@ -1,5 +1,7 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import image from '@ohos.multimedia.image';
 import http from '@ohos.net.http';
+import { util } from '@kit.ArkTS';
 
 const LOG_DOMAIN: number = 0x0523;
 const LOG_TAG: string = 'LlmService';
@@ -140,6 +142,22 @@ interface ParsedTaskResponse {
 
 interface JsonParseErrorLike {
   message?: string;
+}
+
+interface PixelMapEncodeOptions {
+  format: 'image/png' | 'image/jpeg';
+  quality: number;
+}
+
+interface PixelMapSizeLike {
+  width: number;
+  height: number;
+}
+
+interface PixelMapInfoLike {
+  width?: number;
+  height?: number;
+  size?: PixelMapSizeLike;
 }
 
 const TASK_RESULT_SCHEMA: TicketTaskObjectSchema = {
@@ -529,4 +547,49 @@ Extraction rules:
     const minute = `${Number(chineseMatch[5] || '0')}`.padStart(2, '0');
     return `${shortYear}-${month}-${day} ${hour}:${minute}:00`;
   }
+}
+
+export async function pixelMapToBase64(
+  pixelMap: image.PixelMap,
+  options?: PixelMapEncodeOptions
+): Promise<string> {
+  const encodeOptions: PixelMapEncodeOptions = options ? options : {
+    format: 'image/jpeg',
+    quality: 40
+  };
+  const imageInfo = getPixelMapInfo(pixelMap);
+  const packer = image.createImagePacker();
+  try {
+    const arrayBuffer = await packer.packToData(pixelMap, encodeOptions);
+    const uint8Array = new Uint8Array(arrayBuffer);
+    const base64 = new util.Base64Helper().encodeToStringSync(uint8Array);
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      'pixelMapToBase64 done size=%{public}s format=%{public}s quality=%{public}d packedBytes=%{public}d base64Chars=%{public}d',
+      imageInfo,
+      encodeOptions.format,
+      encodeOptions.quality,
+      uint8Array.length,
+      base64.length
+    );
+    return base64;
+  } finally {
+    await packer.release();
+  }
+}
+
+function getPixelMapInfo(pixelMap: image.PixelMap): string {
+  try {
+    const info = pixelMap.getImageInfoSync() as PixelMapInfoLike;
+    if (info.size) {
+      return `${info.size.width}x${info.size.height}`;
+    }
+    if (typeof info.width === 'number' && typeof info.height === 'number') {
+      return `${info.width}x${info.height}`;
+    }
+  } catch (error) {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'getPixelMapInfo failed: %{public}s', JSON.stringify(error));
+  }
+  return 'unknown';
 }

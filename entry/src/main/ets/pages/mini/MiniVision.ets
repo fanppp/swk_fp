@@ -6,10 +6,34 @@ import { util } from '@kit.ArkTS';
 const LOG_DOMAIN: number = 0x0523;
 const LOG_TAG: string = 'MiniVision';
 
+export interface MiniImageAttachment {
+  name: string;
+  mimeType: string;
+  pixelMap: image.PixelMap;
+}
+
 export interface MiniImageBase64Attachment {
   name: string;
   mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
   base64: string;
+}
+
+export async function loadRawfileImage(
+  context: common.UIAbilityContext,
+  rawFilePath: string
+): Promise<MiniImageAttachment> {
+  const rawBytes = await context.resourceManager.getRawFileContent(rawFilePath);
+  const imageSource = image.createImageSource(rawBytes.buffer);
+  try {
+    const pixelMap = await imageSource.createPixelMap();
+    return {
+      name: rawFilePath,
+      mimeType: inferMimeType(rawFilePath),
+      pixelMap
+    };
+  } finally {
+    await imageSource.release();
+  }
 }
 
 export async function loadRawfileImageBase64(
@@ -63,4 +87,15 @@ export async function loadRawfileImageBase64(
     await packer.release();
     await imageSource.release();
   }
+}
+
+function inferMimeType(filePath: string): string {
+  const normalized = filePath.toLowerCase();
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
+    return 'image/jpeg';
+  }
+  if (normalized.endsWith('.webp')) {
+    return 'image/webp';
+  }
+  return 'image/png';
 }

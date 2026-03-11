@@ -1,5 +1,6 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { LlmService, LlmTaskIdentificationResult } from './MiniLlmService';
+import image from '@ohos.multimedia.image';
+import { LlmService, LlmTaskIdentificationResult, pixelMapToBase64 } from './MiniLlmService';
 
 const LOG_DOMAIN: number = 0x0523;
 const LOG_TAG: string = 'Mini';
@@ -19,17 +20,23 @@ export interface EnhancedTaskResult {
   otherInfo?: string;
 }
 
-export async function identifyTaskFromImageBase64(
+export async function identifyTaskFromUserInput(
   userText: string,
-  imageBase64: string,
-  imageMimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  screenshotPixelMap?: image.PixelMap
 ): Promise<EnhancedTaskResult> {
   try {
     const llmService = LlmService.getInstance();
+    let imageBase64: string | undefined = undefined;
+    if (screenshotPixelMap) {
+      imageBase64 = await pixelMapToBase64(screenshotPixelMap, {
+        format: 'image/jpeg',
+        quality: 40
+      });
+    }
     const result = await llmService.identifyTaskFromMultimodal({
       userText,
       imageBase64,
-      imageMimeType,
+      imageMimeType: 'image/jpeg',
       imageDetail: 'low'
     });
     return normalizeTaskResult(result, userText);
