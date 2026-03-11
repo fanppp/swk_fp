@@ -1,7 +1,7 @@
 import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { captureBottomHalfScreenshot } from './mini/MiniVision';
-import { identifyTaskFromUserInput, EnhancedTaskResult } from './mini/MiniLlm';
+import { loadRawfileImageBase64 } from './mini/MiniVision';
+import { identifyTaskFromImageBase64, EnhancedTaskResult } from './mini/MiniLlm';
 
 @Entry
 @Component
@@ -11,6 +11,7 @@ struct ConcertDetailPage {
   @State logText: string = '';
 
   private readonly promptText: string = '等下帮我抢这张演唱会门票';
+  private readonly sampleImagePath: string = 'maoyan_small.jpg';
 
   build() {
     Column({ space: 16 }) {
@@ -21,7 +22,7 @@ struct ConcertDetailPage {
         .fontColor('#111827')
         .textAlign(TextAlign.Center);
 
-      Text('只保留最小识别功能。点击按钮后，会截取当前页面下半屏并发送给大模型识别。')
+      Text('只保留最小识别功能。点击按钮后，会读取 rawfile 内置参考图 maoyan_small.jpg 并发送给大模型识别。')
         .width('100%')
         .fontSize(14)
         .lineHeight(22)
@@ -81,20 +82,26 @@ struct ConcertDetailPage {
 
     try {
       const context = getContext(this) as common.UIAbilityContext;
-      const screenshotAttachment = await captureBottomHalfScreenshot(context);
-      this.appendLog(`截图完成: ${screenshotAttachment.name}`);
+      const sampleAttachment = await loadRawfileImageBase64(context, this.sampleImagePath);
+      this.appendLog(`参考图加载完成: ${sampleAttachment.name}`);
 
-      const taskResult: EnhancedTaskResult = await identifyTaskFromUserInput(
+      const taskResult: EnhancedTaskResult = await identifyTaskFromImageBase64(
         this.promptText,
-        screenshotAttachment.pixelMap
+        sampleAttachment.base64,
+        sampleAttachment.mimeType
       );
 
       this.resultText = [
         `任务类型: ${taskResult.taskType}`,
         `任务标题: ${taskResult.title}`,
-        `时间信息: ${taskResult.timeText || '未识别到时间'}`,
-        `识别置信度: ${(taskResult.confidence * 100).toFixed(1)}%`,
-        `额外信息: ${taskResult.extraInfo || '无'}`
+        `票务开抢时间: ${taskResult.ticketSaleStartTime || '未识别到时间'}`,
+        `开始表演时间: ${taskResult.performanceStartTime || '未识别到'}`,
+        `票价范围: ${taskResult.priceRange || '未识别到'}`,
+        `抢票平台: ${taskResult.ticketPlatform || '未识别到'}`,
+        `演出城市: ${taskResult.city || '未识别到'}`,
+        `演出场馆: ${taskResult.venue || '未识别到'}`,
+        `演出阵容: ${taskResult.lineup || '未识别到'}`,
+        `其他信息: ${taskResult.otherInfo || '无'}`
       ].join('\n');
       this.appendLog('识别完成');
     } catch (error) {

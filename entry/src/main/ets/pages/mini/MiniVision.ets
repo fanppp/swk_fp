@@ -1,120 +1,66 @@
-import { window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import image from '@ohos.multimedia.image';
+import { util } from '@kit.ArkTS';
 
-interface SnapshotWindowLike {
-  snapshot?: () => Promise<Object>;
-  snapshotSync?: () => Object;
-}
+const LOG_DOMAIN: number = 0x0523;
+const LOG_TAG: string = 'MiniVision';
 
-interface ImageInfoSize {
-  width: number;
-  height: number;
-}
-
-interface ImageInfoLike {
-  width?: number;
-  height?: number;
-  size?: ImageInfoSize;
-}
-
-interface PixelMapLike {
-  cropSync?: (region: CropRegion) => void;
-  crop?: (region: CropRegion) => Promise<void>;
-  getImageInfoSync?: () => ImageInfoLike;
-  getImageInfo?: () => Promise<ImageInfoLike>;
-}
-
-interface CropRegion {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-interface PixelMapSize {
-  width: number;
-  height: number;
-}
-
-export interface MiniImageAttachment {
+export interface MiniImageBase64Attachment {
   name: string;
-  mimeType: string;
-  pixelMap: image.PixelMap;
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  base64: string;
 }
 
-export async function captureBottomHalfScreenshot(context: common.UIAbilityContext): Promise<MiniImageAttachment> {
-  const hostWindow = await window.getLastWindow(context) as Object as SnapshotWindowLike;
-  const snapshot = await takeWindowSnapshot(hostWindow);
-  if (!snapshot) {
-    throw new Error('snapshot failed');
+export async function loadRawfileImageBase64(
+  context: common.UIAbilityContext,
+  rawFilePath: string
+): Promise<MiniImageBase64Attachment> {
+  const startTime = Date.now();
+  const rawBytes = await context.resourceManager.getRawFileContent(rawFilePath);
+  const imageSource = image.createImageSource(rawBytes.buffer);
+  const packer = image.createImagePacker();
+  try {
+    const imageInfo = await imageSource.getImageInfo();
+    const decodeStartTime = Date.now();
+    const pixelMap = await imageSource.createPixelMap();
+    const decodeDuration = Date.now() - decodeStartTime;
+    try {
+      const encodeStartTime = Date.now();
+      const packed = await packer.packToData(pixelMap, {
+        format: 'image/jpeg',
+        quality: 45
+      });
+      const encodeDuration = Date.now() - encodeStartTime;
+      const base64StartTime = Date.now();
+      const base64 = new util.Base64Helper().encodeToStringSync(new Uint8Array(packed));
+      const base64Duration = Date.now() - base64StartTime;
+      const totalDuration = Date.now() - startTime;
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'loadRawfileImageBase64 pixelMap file=%{public}s rawBytes=%{public}d src=%{public}dx%{public}d packedBytes=%{public}d base64Chars=%{public}d decodeMs=%{public}d encodeMs=%{public}d base64Ms=%{public}d totalMs=%{public}d',
+        rawFilePath,
+        rawBytes.length,
+        imageInfo.size.width,
+        imageInfo.size.height,
+        packed.byteLength,
+        base64.length,
+        decodeDuration,
+        encodeDuration,
+        base64Duration,
+        totalDuration
+      );
+      return {
+        name: rawFilePath,
+        mimeType: 'image/jpeg',
+        base64
+      };
+    } finally {
+      await pixelMap.release();
+    }
+  } finally {
+    await packer.release();
+    await imageSource.release();
   }
-  await cropBottomHalf(snapshot as Object as PixelMapLike);
-
-  const attachment: MiniImageAttachment = {
-    name: `ticket_${Date.now()}.png`,
-    mimeType: 'image/png',
-    pixelMap: snapshot as image.PixelMap
-  };
-  return attachment;
-}
-
-async function takeWindowSnapshot(hostWindow: SnapshotWindowLike): Promise<Object | undefined> {
-  if (hostWindow.snapshot) {
-    return hostWindow.snapshot();
-  }
-  if (hostWindow.snapshotSync) {
-    return hostWindow.snapshotSync();
-  }
-  return undefined;
-}
-
-async function cropBottomHalf(pixelMap: PixelMapLike): Promise<void> {
-  const size = await getPixelMapSize(pixelMap);
-  if (!size) {
-    return;
-  }
-
-  const cropY = Math.floor(size.height / 2);
-  const region: CropRegion = {
-    x: 0,
-    y: cropY,
-    width: size.width,
-    height: Math.max(1, size.height - cropY)
-  };
-
-  if (pixelMap.cropSync) {
-    pixelMap.cropSync(region);
-    return;
-  }
-  if (pixelMap.crop) {
-    await pixelMap.crop(region);
-  }
-}
-
-async function getPixelMapSize(pixelMap: PixelMapLike): Promise<PixelMapSize | undefined> {
-  let info: ImageInfoLike | undefined = undefined;
-  if (pixelMap.getImageInfoSync) {
-    info = pixelMap.getImageInfoSync();
-  } else if (pixelMap.getImageInfo) {
-    info = await pixelMap.getImageInfo();
-  }
-  if (!info) {
-    return undefined;
-  }
-  if (info.size) {
-    const fromSize: PixelMapSize = {
-      width: info.size.width,
-      height: info.size.height
-    };
-    return fromSize;
-  }
-  if (typeof info.width === 'number' && typeof info.height === 'number') {
-    const fromPlain: PixelMapSize = {
-      width: info.width,
-      height: info.height
-    };
-    return fromPlain;
-  }
-  return undefined;
 }
